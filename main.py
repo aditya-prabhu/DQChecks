@@ -6,6 +6,7 @@ import io
 import json
 import os
 
+from azure.storage.blob import BlobServiceClient, BlobClient
 from checks import perform_checks
 
 app = FastAPI()
@@ -18,6 +19,26 @@ app.add_middleware(
 )
 
 chunk_buffers = {}
+
+AZURE_CONNECTION_STRING = ""
+BLOB_CONTAINER = "blobcontainer"
+
+def download_blob_to_bytes(blob_name: str):
+    MAX_SINGLE_GET_SIZE = 12 * 1024 * 1024
+    MAX_CHUNK_GET_SIZE = 2 * 1024 * 1024
+    MAX_CONCURRENCY = 8
+
+    blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+    blob_client = BlobClient(
+        account_url=blob_service_client.url,
+        container_name=BLOB_CONTAINER,
+        blob_name=blob_name,
+        credential=blob_service_client.credential,
+        max_single_get_size=MAX_SINGLE_GET_SIZE,
+        max_chunk_get_size=MAX_CHUNK_GET_SIZE
+    )
+    stream = blob_client.download_blob(max_concurrency=MAX_CONCURRENCY)
+    return stream.readall()
 
 def read_dataframe(file_bytes: bytes, filename: str):
     """
@@ -90,3 +111,41 @@ async def dq_checks_chunk(
             "chunk_number": chunk_number,
             "status": "in-progress"
         })
+
+@app.post("/dq_checks_blob")
+async def dq_checks_blob(
+    blob_name: str = Form(...),
+    checks: str = Form(...),
+):
+    if not checks:
+        return JSONResponse(status_code=400, content={"error": "checks field is required and must be a JSON string"})
+    try:
+        checks_dict = json.loads(checks)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Invalid JSON for checks: {str(e)}"})
+
+    try:
+        print("reading file")
+        file_bytes = download_blob_to_bytes(blob_name)
+    except Exception as e:
+        return JSONResponse(status_code=404, content={"error": f"Blob '{blob_name}' not found or failed to download: {str(e)}"})
+
+    print("converting to df")
+    df = read_dataframe(file_bytes, blob_name)
+    print("running validations")
+    results, overall_results = perform_checks(df, checks_dict)
+
+    # Delete the blob after processing
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+        blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER, blob=blob_name)
+        blob_client.delete_blob()
+        print(f"Deleted blob: {blob_name}")
+    except Exception as e:
+        print(f"Warning: Failed to delete blob '{blob_name}': {str(e)}")
+
+    return JSONResponse(content={
+        "filename": blob_name,
+        "dq_results": results,
+        "overall_pass": overall_results
+    })
