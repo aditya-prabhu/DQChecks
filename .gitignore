@@ -2,3 +2,4 @@
 /data
 /uploads
 .env
+/.python_packages
