@@ -2,6 +2,7 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import polars as pl
+from dotenv import load_dotenv
 import io
 import json
 import os
@@ -19,10 +20,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+load_dotenv()
+
 chunk_buffers = {}
 
-AZURE_CONNECTION_STRING = "<AZURE_CONNECTION_STRING>"
-BLOB_CONTAINER = "blobcontainer"
+AZURE_CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING")
+BLOB_CONTAINER = os.getenv("BLOB_CONTAINER")
 
 def download_blob_to_bytes(blob_name: str):
     MAX_SINGLE_GET_SIZE = 12 * 1024 * 1024
@@ -63,7 +66,7 @@ def get_failed_summary(results):
             failed_summary[col] = failed_checks
     return failed_summary
 
-@app.post("/dq_checks_csv")
+@app.post("/dq_checks_csv_export")
 async def dq_checks_csv(
     file: UploadFile = File(...),
     checks: str = Form(...)
@@ -155,7 +158,7 @@ async def dq_checks_csv(
     output.seek(0)
     return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=failed_checks.csv"})
 
-@app.post("/dq_checks_table")
+@app.post("/dq_checks_table_preview")
 async def dq_checks_table(
     file: UploadFile = File(...),
     checks: str = Form(...)
@@ -284,7 +287,7 @@ async def dq_checks_table(
 
     return JSONResponse(content=result)
 
-@app.post("/dq_checks")
+@app.post("/dq_checks_full")
 async def dq_checks(
     file: UploadFile = File(...),
     checks: str = Form(...)
@@ -306,7 +309,7 @@ async def dq_checks(
         "overall_pass": overall_results
     })
 
-@app.post("/dq_checks_chunk")
+@app.post("/dq_checks_chunked_upload")
 async def dq_checks_chunk(
     file: UploadFile = File(...),
     checks: str = Form(...),
@@ -346,7 +349,7 @@ async def dq_checks_chunk(
             "status": "in-progress"
         })
 
-@app.post("/dq_checks_blob")
+@app.post("/dq_checks_blob_storage")
 async def dq_checks_blob(
     blob_name: str = Form(...),
     checks: str = Form(...),
@@ -376,6 +379,35 @@ async def dq_checks_blob(
         print(f"Deleted blob: {blob_name}")
     except Exception as e:
         print(f"Warning: Failed to delete blob '{blob_name}': {str(e)}")
+
+    return JSONResponse(content={
+        "filename": blob_name,
+        "dq_results": results,
+        "overall_pass": overall_results
+    })
+
+@app.post("/dq_checks_blob_storage_with_connection")
+async def dq_checks_blob_with_connection(
+    blob_name: str = Form(...),
+    checks: str = Form(...),
+    connection_string: str = Form(...)
+):
+    if not checks:
+        return JSONResponse(status_code=400, content={"error": "checks field is required and must be a JSON string"})
+    try:
+        checks_dict = json.loads(checks)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Invalid JSON for checks: {str(e)}"})
+
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER, blob=blob_name)
+        file_bytes = blob_client.download_blob().readall()
+    except Exception as e:
+        return JSONResponse(status_code=404, content={"error": f"Blob '{blob_name}' not found or failed to download: {str(e)}"})
+
+    df = read_dataframe(file_bytes, blob_name)
+    results, overall_results = perform_checks(df, checks_dict)
 
     return JSONResponse(content={
         "filename": blob_name,
