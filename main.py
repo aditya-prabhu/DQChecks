@@ -390,7 +390,8 @@ async def dq_checks_blob(
 async def dq_checks_blob_with_connection(
     blob_name: str = Form(...),
     checks: str = Form(...),
-    connection_string: str = Form(...)
+    connection_string: str = Form(...),
+    blob_container: str = Form(None)
 ):
     if not checks:
         return JSONResponse(status_code=400, content={"error": "checks field is required and must be a JSON string"})
@@ -400,8 +401,9 @@ async def dq_checks_blob_with_connection(
         return JSONResponse(status_code=400, content={"error": f"Invalid JSON for checks: {str(e)}"})
 
     try:
+        container = blob_container if blob_container else BLOB_CONTAINER
         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-        blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER, blob=blob_name)
+        blob_client = blob_service_client.get_blob_client(container=container, blob=blob_name)
         file_bytes = blob_client.download_blob().readall()
     except Exception as e:
         return JSONResponse(status_code=404, content={"error": f"Blob '{blob_name}' not found or failed to download: {str(e)}"})
