@@ -44,8 +44,6 @@ This project provides a FastAPI-based REST API for performing data quality check
 - Send HTTP POST requests to the endpoints with files and validation rules.
 - See endpoint docstrings and examples for request formats.
 
-...existing code...
-
 ## Example Checks JSON
 
 Below is a sample `checks` JSON string for validating columns.  
