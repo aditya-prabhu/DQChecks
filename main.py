@@ -8,6 +8,8 @@ import json
 import os
 import csv
 
+from blob_cache import read_cache, write_cache
+
 from azure.storage.blob import BlobServiceClient, BlobClient
 from checks import perform_checks
 
@@ -348,6 +350,7 @@ async def dq_checks_chunk(
             "chunk_number": chunk_number,
             "status": "in-progress"
         })
+    
 
 @app.post("/dq_checks_blob_storage")
 async def dq_checks_blob(
@@ -361,29 +364,44 @@ async def dq_checks_blob(
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"Invalid JSON for checks: {str(e)}"})
 
+    use_cache = checks_dict.get("use_cache", False)
+
+    if use_cache:
+        cached = read_cache(blob_name, checks_dict)
+        if cached:
+            return JSONResponse(content={
+                "filename": blob_name,
+                "dq_results": cached["dq_results"],
+                "overall_pass": cached["overall_pass"],
+                "cached": True
+            })
+
     try:
-        print("reading file")
         file_bytes = download_blob_to_bytes(blob_name)
     except Exception as e:
         return JSONResponse(status_code=404, content={"error": f"Blob '{blob_name}' not found or failed to download: {str(e)}"})
 
-    print("converting to df")
     df = read_dataframe(file_bytes, blob_name)
-    print("running validations")
     results, overall_results = perform_checks(df, checks_dict)
 
-    try:
-        blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-        blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER, blob=blob_name)
-        blob_client.delete_blob()
-        print(f"Deleted blob: {blob_name}")
-    except Exception as e:
-        print(f"Warning: Failed to delete blob '{blob_name}': {str(e)}")
+    if use_cache:
+        write_cache(blob_name, checks_dict, {
+            "dq_results": results,
+            "overall_pass": overall_results
+        })
+
+    # try:
+    #     blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+    #     blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER, blob=blob_name)
+    #     blob_client.delete_blob()
+    # except Exception as e:
+    #     print(f"Warning: Failed to delete blob '{blob_name}': {str(e)}")
 
     return JSONResponse(content={
         "filename": blob_name,
         "dq_results": results,
-        "overall_pass": overall_results
+        "overall_pass": overall_results,
+        "cached": False
     })
 
 @app.post("/dq_checks_blob_storage_with_connection")
@@ -400,6 +418,18 @@ async def dq_checks_blob_with_connection(
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"Invalid JSON for checks: {str(e)}"})
 
+    use_cache = checks_dict.get("use_cache", False)
+
+    if use_cache:
+        cached = read_cache(blob_name, checks_dict)
+        if cached:
+            return JSONResponse(content={
+                "filename": blob_name,
+                "dq_results": cached["dq_results"],
+                "overall_pass": cached["overall_pass"],
+                "cached": True
+            })
+
     try:
         container = blob_container if blob_container else BLOB_CONTAINER
         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
@@ -411,8 +441,15 @@ async def dq_checks_blob_with_connection(
     df = read_dataframe(file_bytes, blob_name)
     results, overall_results = perform_checks(df, checks_dict)
 
+    if use_cache:
+        write_cache(blob_name, checks_dict, {
+            "dq_results": results,
+            "overall_pass": overall_results
+        })
+
     return JSONResponse(content={
         "filename": blob_name,
         "dq_results": results,
-        "overall_pass": overall_results
+        "overall_pass": overall_results,
+        "cached": False
     })
